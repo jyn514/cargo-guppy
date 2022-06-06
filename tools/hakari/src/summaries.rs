@@ -10,10 +10,18 @@ use crate::{
 };
 use guppy::{
     errors::TargetSpecError,
-    graph::{cargo::CargoResolverVersion, summaries::PackageSetSummary, PackageGraph},
+    graph::{
+        cargo::CargoResolverVersion,
+        summaries::{PackageSetSummary, ThirdPartySummary},
+        PackageGraph,
+    },
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 use toml::Serializer;
 
 /// The location of the configuration used by `cargo hakari`, relative to the workspace root.
@@ -45,6 +53,93 @@ impl FromStr for HakariConfig {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         toml::from_str(input)
     }
+}
+
+/// A crate in the current workspace, possible with specific features ignored.
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Serialize)]
+pub struct WorkspaceMember {
+    name: String,
+    /// The features to ignore for this crate. If `features` is empty, all features should be ignored.
+    features: Vec<String>,
+}
+
+/// Collapses an `Option<Vec<String>>` into `Vec<String>`, giving an error if the user wrote an empty list.
+///
+/// The goal here is to make illegal states (in this case, `Some(vec![])`) unrepresentable.
+fn require_non_empty<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let features = Option::<Vec<String>>::deserialize(d)?;
+    if let Some(f) = &features {
+        if f.is_empty() {
+            return Err(D::Error::invalid_length(
+                0,
+                &"at least one feature must be specified; or omit the `features` field altogether",
+            ));
+        }
+    }
+    Ok(features.unwrap_or_default())
+}
+
+impl<'de> Deserialize<'de> for WorkspaceMember {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        enum WorkspaceMemberVariants {
+            NameOnly(String),
+            NameAndFeatures {
+                name: String,
+                #[serde(deserialize_with = "require_non_empty")]
+                features: Vec<String>,
+            },
+        }
+
+        Ok(match WorkspaceMemberVariants::deserialize(deserializer)? {
+            WorkspaceMemberVariants::NameOnly(name) => WorkspaceMember {
+                name,
+                features: vec![],
+            },
+            WorkspaceMemberVariants::NameAndFeatures { name, features } => {
+                WorkspaceMember { name, features }
+            }
+        })
+    }
+}
+
+/// Similar to [`ThirdPartySummary`], but allows specifying features for the third-party crate.
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ThirdPartySummaryWithFeatures {
+    #[serde(flatten)]
+    krate: ThirdPartySummary,
+    /// The features to ignore for this crate. If `features` is empty, all features should be ignored.
+    #[serde(deserialize_with = "require_non_empty")]
+    features: Vec<String>,
+}
+
+/// Similar to [`PackageSetSummary`], but allows specifying individual features for crates.
+///
+/// This is useful when you want to consider most, but not all, of the features from a crate in your dependency tree.
+/// It's also useful when your current workspace *defines* features, rather than just specifying features from dependencies.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PackageSetSummaryWithFeatures {
+    /// Workspace packages, specified by names. Typically used in config files.
+    ///
+    /// These require a `PackageGraph` as context.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty", default)]
+    pub workspace_members: BTreeSet<WorkspaceMember>,
+
+    /// Non-workspace packages, including non-workspace path dependencies. Typically used in
+    /// config files.
+    ///
+    /// Requires a `PackageGraph` as context.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub third_party: Vec<ThirdPartySummaryWithFeatures>,
 }
 
 /// A `HakariBuilder` in serializable form. This forms the configuration file format for `hakari`.
@@ -84,11 +179,11 @@ pub struct HakariBuilderSummary {
 
     /// The list of packages excluded during graph traversals.
     #[serde(default)]
-    pub traversal_excludes: PackageSetSummary,
+    pub traversal_excludes: PackageSetSummaryWithFeatures,
 
     /// The list of packages excluded from the final output.
     #[serde(default)]
-    pub final_excludes: PackageSetSummary,
+    pub final_excludes: PackageSetSummaryWithFeatures,
 
     /// The list of alternate registries, as a map of name to URL.
     ///
@@ -297,6 +392,58 @@ mod registries_impl {
 mod tests {
     use super::*;
     use fixtures::json::*;
+
+    #[test]
+    fn parse_features() {
+        static PARSE_FEATURES_INPUT: &str = r#"
+        [traversal-excludes]
+        workspace-members = [
+            "my-crate",
+            { name = "my-other-crate", features = ["foo", "bar"] }
+        ]
+        third-party = [
+            { package = "foo", version = "1", features = ["feature1", "feature2"] }
+        ]
+        "#;
+
+        let summary: HakariBuilderSummary =
+            toml::from_str(PARSE_FEATURES_INPUT).expect("failed to parse toml");
+        let expected_exclude = PackageSetSummaryWithFeatures {
+            workspace_members: [
+                WorkspaceMember {
+                    name: "my-crate".into(),
+                    features: vec![],
+                },
+                WorkspaceMember {
+                    name: "my-other-crate".into(),
+                    features: vec!["foo".into(), "bar".into()],
+                },
+            ]
+            .into_iter()
+            .collect(),
+            third_party: vec![ThirdPartySummaryWithFeatures {
+                krate: ThirdPartySummary {
+                    name: "foo".into(),
+                    version: "1".parse().unwrap(),
+                    source: guppy::graph::summaries::ThirdPartySource::Registry(None),
+                    features: vec!["feature1".into(), "feature2".into()],
+                },
+            }],
+        };
+        assert_eq!(summary.traversal_excludes, expected_exclude);
+    }
+
+    #[test]
+    fn empty_features_not_allowed() {
+        static EMPTY_FEATURES_INPUT: &str = r#"
+        [traversal-excludes]
+        workspace-members = [ { name = "my-crate", features = [] }]
+        "#;
+        assert!(toml::from_str::<HakariBuilderSummary>(EMPTY_FEATURES_INPUT)
+            .unwrap_err()
+            .to_string()
+            .contains("empty features"));
+    }
 
     #[test]
     fn parse_registries() {
