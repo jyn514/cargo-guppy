@@ -661,6 +661,7 @@ impl<'g> Hakari<'g> {
                         .set_initials_platform(initials_platform)
                         .set_platform(platform_spec)
                         .set_resolver(builder.resolver)
+                        // add_omitted_features
                         .add_omitted_packages(computed_map_build.excludes.iter());
                     let cargo_set = features
                         .into_cargo_set(&cargo_opts)
@@ -908,6 +909,7 @@ impl<'g, 'b> ComputedMapBuild<'g, 'b> {
                     .set_include_dev(include_dev)
                     .set_resolver(builder.resolver)
                     .set_platform(platform_spec)
+                    // add_omitted_features
                     .add_omitted_packages(excludes.iter());
 
                 workspace.par_iter().map(move |workspace_package| {

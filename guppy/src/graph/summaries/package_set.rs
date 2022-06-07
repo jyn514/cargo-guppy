@@ -217,8 +217,8 @@ impl PackageSetSummary {
         let mut package_matcher = PackageMatcher::new(self, registry_name_to_url, error_message)?;
         let package_set = graph
             .resolve_all()
-            .filter(DependencyDirection::Forward, |metadata| {
-                package_matcher.store_is_match(metadata)
+            .filter(DependencyDirection::Forward, |mut metadata| {
+                package_matcher.store_is_match(&metadata)
             });
         Ok((package_set, package_matcher))
     }
@@ -621,7 +621,7 @@ impl<'a> PackageMatcher<'a> {
     }
 
     /// Return whether something is a match, and record matches in `self`.
-    fn store_is_match(&mut self, metadata: PackageMetadata<'_>) -> bool {
+    fn store_is_match(&mut self, metadata: &PackageMetadata<'_>) -> bool {
         // Don't short-circuit matches because we want to mark a
         // TODO: maybe this should involve duplicate detection between summary_ids and workspace/
         // third-party

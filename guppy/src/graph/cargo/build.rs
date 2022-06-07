@@ -1,12 +1,14 @@
 // Copyright (c) The cargo-guppy Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::BTreeMap;
+
 use crate::{
     graph::{
         cargo::{
             CargoIntermediateSet, CargoOptions, CargoResolverVersion, CargoSet, InitialsPlatform,
         },
-        feature::{ConditionalLink, FeatureLabel, FeatureQuery, FeatureSet, StandardFeatures},
+        feature::{ConditionalLink, FeatureLabel, FeatureQuery, FeatureSet, StandardFeatures, FeatureFilter},
         DependencyDirection, PackageGraph, PackageIx, PackageLink, PackageSet,
     },
     platform::{EnabledTernary, PlatformSpec},
@@ -18,7 +20,8 @@ use petgraph::{prelude::*, visit::VisitMap};
 
 pub(super) struct CargoSetBuildState<'a> {
     opts: &'a CargoOptions<'a>,
-    omitted_packages: SortedSet<NodeIndex<PackageIx>>,
+    // omitted_packages: SortedSet<NodeIndex<PackageIx>>,
+    omitted_features: BTreeMap<NodeIndex<PackageIx>, Vec<String>>,
 }
 
 impl<'a> CargoSetBuildState<'a> {
@@ -26,12 +29,17 @@ impl<'a> CargoSetBuildState<'a> {
         graph: &'g PackageGraph,
         opts: &'a CargoOptions<'a>,
     ) -> Result<Self, Error> {
-        let omitted_packages: SortedSet<_> =
-            graph.package_ixs(opts.omitted_packages.iter().copied())?;
+        // let omitted_packages: SortedSet<_> =
+        //     graph.package_ixs(opts.omitted_packages.iter().copied())?;
+        let omitted_features: BTreeMap<_, _> = opts.omitted_features.iter().map(|(id, features)| {
+            // TODO: this clone looks expensive
+            Ok((graph.package_ix(id)?, features.clone()))
+        }).collect::<Result<_, Error>>()?;
 
         Ok(Self {
             opts,
-            omitted_packages,
+            // omitted_packages,
+            omitted_features,
         })
     }
 
@@ -82,8 +90,11 @@ impl<'a> CargoSetBuildState<'a> {
     // Helper methods
     // ---
 
+    /// Returns `true` if all features from `package_ix` should be ignored.
+    ///
+    /// Note that this returns *`false`* if only some features are ignored.
     fn is_omitted(&self, package_ix: NodeIndex<PackageIx>) -> bool {
-        self.omitted_packages.contains(&package_ix)
+        self.omitted_features.get(&package_ix).map_or(false, Vec::is_empty)
     }
 
     fn build_set<'g>(
@@ -148,6 +159,7 @@ impl<'a> CargoSetBuildState<'a> {
         // This list will contain build dep edges out of target packages.
         let mut build_dep_edge_ixs = Vec::new();
 
+        // Decide whether to enable optional dependencies.
         let is_enabled = |feature_set: &FeatureSet<'_>,
                           link: &PackageLink<'_>,
                           kind: DependencyKind,
@@ -170,8 +182,14 @@ impl<'a> CargoSetBuildState<'a> {
                     );
                     false
                 });
+            
+            // TODO: this doesn't exclude dependencies if they would only be enabled by an omitted feature.
+            // (This is only checking whether the feature has the same name as a crate, not `x = ["y"]`.)
+            let excluded_by_name = self.omitted_features.get(&from.package_ix()).map_or(false, |features| {
+                features.iter().any(|f| f == link.dep_name())
+            });
 
-            if consider_optional {
+            if consider_optional && !excluded_by_name {
                 req_status.enabled_on(platform_spec) != EnabledTernary::Disabled
             } else {
                 req_status.required_on(platform_spec) != EnabledTernary::Disabled
@@ -280,14 +298,29 @@ impl<'a> CargoSetBuildState<'a> {
                     false
                 }
             });
+        
+        // struct 
+        impl<'g> FeatureFilter<'g> for &CargoSetBuildState<'_> {
+            fn accept(&mut self, graph: &crate::graph::feature::FeatureGraph<'g>, feature_id: crate::graph::feature::FeatureId<'g>) -> bool {
+                let package_ix = graph.package_graph.package_ix(feature_id.package_id()).expect("missing package in graph!");
+                let omitted_features = match self.omitted_features.get(&package_ix) {
+                    None => return true,
+                    Some(features) => features,
+                };
+                match feature_id.label() {
+                    FeatureLabel::Named(n) | FeatureLabel::OptionalDependency(n) => !omitted_features.iter().any(|f| f == n),
+                    FeatureLabel::Base => true,
+                }
+            }
+        }
 
         // Finally, the features are whatever packages were selected, intersected with whatever
         // features were selected.
         let target_features = target_packages
-            .to_feature_set(StandardFeatures::All)
+            .to_feature_set(self)
             .intersection(target_set);
         let host_features = host_packages
-            .to_feature_set(StandardFeatures::All)
+            .to_feature_set(self)
             .intersection(host_set);
 
         // Also construct the direct dep sets.

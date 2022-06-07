@@ -170,7 +170,12 @@ impl CargoOptionsSummary {
         opts: &CargoOptions<'_>,
     ) -> Result<Self, Error> {
         let omitted_packages =
-            PackageSetSummary::from_package_ids(graph, opts.omitted_packages.iter().copied())?;
+            PackageSetSummary::from_package_ids(graph, opts.omitted_features.iter().map(|(id, features)| {
+                if !features.is_empty() {
+                    todo!("handle features in CargoOptionsSummary::new");
+                }
+                id
+            }).copied())?;
 
         let mut features_only = features_only
             .packages_with_features(DependencyDirection::Forward)

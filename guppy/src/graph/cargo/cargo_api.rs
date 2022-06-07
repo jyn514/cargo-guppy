@@ -13,7 +13,7 @@ use crate::{
 };
 use petgraph::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fmt};
+use std::{collections::{HashSet, BTreeMap}, fmt};
 
 /// Options for queries which simulate what Cargo does.
 ///
@@ -26,7 +26,8 @@ pub struct CargoOptions<'a> {
     // Use Supercow here to ensure that owned Platform instances are boxed, to reduce stack size.
     pub(crate) host_platform: PlatformSpec,
     pub(crate) target_platform: PlatformSpec,
-    pub(crate) omitted_packages: HashSet<&'a PackageId>,
+    // pub(crate) omitted_packages: HashSet<&'a PackageId>,
+    pub(crate) omitted_features: BTreeMap<&'a PackageId, Vec<String>>,
 }
 
 impl<'a> CargoOptions<'a> {
@@ -46,7 +47,8 @@ impl<'a> CargoOptions<'a> {
             initials_platform: InitialsPlatform::Standard,
             host_platform: PlatformSpec::Any,
             target_platform: PlatformSpec::Any,
-            omitted_packages: HashSet::new(),
+            // omitted_packages: HashSet::new(),
+            omitted_features: BTreeMap::new(),
         }
     }
 
@@ -109,7 +111,17 @@ impl<'a> CargoOptions<'a> {
         &mut self,
         package_ids: impl IntoIterator<Item = &'a PackageId>,
     ) -> &mut Self {
-        self.omitted_packages.extend(package_ids);
+        self.add_omitted_features(package_ids.into_iter().map(|id| (id, vec![])))
+        // self.omitted_packages.extend(package_ids);
+        // self.omitted_features.extend(package_ids.into_iter().map(|&id| (id, vec![])));
+        // self
+    }
+
+    pub fn add_omitted_features(
+        &mut self,
+        package_features: impl IntoIterator<Item = (&'a PackageId, Vec<String>)>,
+    ) -> &mut Self {
+        self.omitted_features.extend(package_features);
         self
     }
 }

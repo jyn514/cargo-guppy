@@ -13,7 +13,7 @@ use guppy::{
     graph::{
         cargo::CargoResolverVersion,
         summaries::{PackageSetSummary, ThirdPartySummary},
-        PackageGraph,
+        PackageGraph, DependencyDirection, PackageSet,
     },
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -141,6 +141,43 @@ pub struct PackageSetSummaryWithFeatures {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub third_party: Vec<ThirdPartySummaryWithFeatures>,
 }
+
+// impl PackageSetSummaryWithFeatures {
+//     /// Converts this `PackageSetSummary` to a [`PackageSet`], with the given source for registry
+//     /// names.
+//     ///
+//     /// Returns an error if any of the elements weren't matched.
+//     ///
+//     /// This is a temporary workaround until [Cargo issue #9052](https://github.com/rust-lang/cargo/issues/9052)
+//     /// is resolved.
+//     pub fn to_package_set_registry<'g, 'a>(
+//         &'a self,
+//         graph: &'g PackageGraph,
+//         registry_name_to_url: impl FnMut(&str) -> Option<&'a str>,
+//         error_message: impl Into<String>,
+//     ) -> Result<PackageSet<'g>, guppy::errors::Error> {
+//         let error_message = error_message.into();
+//         let (package_set, matcher) =
+//             self.to_package_set_impl(graph, registry_name_to_url, &error_message)?;
+//         matcher.finish(graph, error_message)?;
+//         Ok(package_set)
+//     }
+
+//     fn to_package_set_impl<'g, 'a>(
+//         &'a self,
+//         graph: &'g PackageGraph,
+//         registry_name_to_url: impl FnMut(&str) -> Option<&'a str>,
+//         error_message: &str,
+//     ) -> Result<(PackageSet<'g>, PackageMatcher<'a>), guppy::errors::Error> {
+//         let mut package_matcher = PackageMatcher::new(self, registry_name_to_url, error_message)?;
+//         let package_set = graph
+//             .resolve_all()
+//             .filter(DependencyDirection::Forward, |metadata| {
+//                 package_matcher.store_is_match(metadata)
+//             });
+//         Ok((package_set, package_matcher))
+//     }
+// }
 
 /// A `HakariBuilder` in serializable form. This forms the configuration file format for `hakari`.
 ///
